@@ -2,10 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { SystemStatusState } from '../types';
 import { INITIAL_SYSTEM_STATUS } from '../lib/constants';
 import { aiService } from '../services/ai';
+import { macControlService } from '../services/mac';
 
 export function useSystemStatus() {
   const [status, setStatus] = useState<SystemStatusState>(() => {
-    // Start with offline / unverified state; never show "Connected" until verified
     return {
       ...INITIAL_SYSTEM_STATUS,
       ollama: {
@@ -13,6 +13,12 @@ export function useSystemStatus() {
         status: 'checking',
         connected: false,
         detail: 'Testing local Ollama connection...',
+      },
+      macControl: {
+        ...INITIAL_SYSTEM_STATUS.macControl,
+        status: 'checking',
+        accessibilityGranted: false,
+        detail: 'Pinging local macOS bridge at http://127.0.0.1:11435...',
       },
     };
   });
@@ -91,10 +97,77 @@ export function useSystemStatus() {
     }
   }, []);
 
+  const checkMacControlHealth = useCallback(async () => {
+    setStatus((prev) => ({
+      ...prev,
+      macControl: {
+        ...prev.macControl,
+        status: 'checking',
+        detail: 'Pinging native macOS bridge...',
+      },
+    }));
+
+    try {
+      const health = await macControlService.checkBridgeHealth();
+
+      if (health.status === 'ok') {
+        const isAccessGranted = Boolean(health.accessibilityGranted);
+        const frontmostName = health.frontmostApp?.name || 'None';
+
+        setStatus((prev) => ({
+          ...prev,
+          macControl: {
+            status: isAccessGranted ? 'ready' : 'permission_required',
+            bridgeVersion: `v${health.version || '0.1.0'}`,
+            accessibilityGranted: isAccessGranted,
+            detail: isAccessGranted
+              ? `Connected to native macOS bridge (v${health.version || '0.1.0'}) on ${health.osVersion || 'macOS'}. Active App: ${frontmostName}`
+              : 'Accessibility permission required. Please enable it in macOS System Settings → Privacy & Security → Accessibility.',
+          },
+        }));
+        return health;
+      } else if (health.status === 'error') {
+        setStatus((prev) => ({
+          ...prev,
+          macControl: {
+            status: 'error',
+            bridgeVersion: 'Error',
+            accessibilityGranted: false,
+            detail: health.error || 'Mac Control Bridge error',
+          },
+        }));
+        return health;
+      } else {
+        setStatus((prev) => ({
+          ...prev,
+          macControl: {
+            status: 'offline',
+            bridgeVersion: 'Unavailable',
+            accessibilityGranted: false,
+            detail: 'Mac Control Bridge unavailable (Run "swift run" in mac-bridge/)',
+          },
+        }));
+        return health;
+      }
+    } catch {
+      setStatus((prev) => ({
+        ...prev,
+        macControl: {
+          status: 'offline',
+          bridgeVersion: 'Unavailable',
+          accessibilityGranted: false,
+          detail: 'Mac Control Bridge unavailable (Run "swift run" in mac-bridge/)',
+        },
+      }));
+      return { status: 'unavailable' as const };
+    }
+  }, []);
+
   // Ping on initial mount
   useEffect(() => {
     checkOllamaHealth();
-  }, [checkOllamaHealth]);
+    checkMacControlHealth();
+  }, [checkOllamaHealth, checkMacControlHealth]);
 
   const updateStatus = (partial: Partial<SystemStatusState>) => {
     setStatus((prev) => ({ ...prev, ...partial }));
@@ -104,5 +177,6 @@ export function useSystemStatus() {
     status,
     updateStatus,
     checkOllamaHealth,
+    checkMacControlHealth,
   };
 }

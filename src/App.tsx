@@ -15,7 +15,11 @@ import { useSystemStatus } from './hooks/useSystemStatus';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<NavigationTab>('chat');
-  const { status: systemStatus, checkOllamaHealth } = useSystemStatus();
+  const { status: systemStatus, checkOllamaHealth, checkMacControlHealth } = useSystemStatus();
+
+  const handleRefreshStatus = async () => {
+    await Promise.all([checkOllamaHealth(), checkMacControlHealth()]);
+  };
 
   return (
     <MainLayout
@@ -27,7 +31,7 @@ export default function App() {
       {currentTab === 'tasks' && <TasksPage />}
       {currentTab === 'skills' && <SkillsPage />}
       {currentTab === 'memory' && <MemoryPage />}
-      {currentTab === 'settings' && <SettingsPage onRefreshStatus={checkOllamaHealth} />}
+      {currentTab === 'settings' && <SettingsPage onRefreshStatus={handleRefreshStatus} />}
     </MainLayout>
   );
 }

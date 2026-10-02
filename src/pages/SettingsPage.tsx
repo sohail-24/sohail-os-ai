@@ -1,7 +1,21 @@
-import React, { useState, useEffect } from 'react';
-import { Settings, Cpu, HardDrive, Terminal, Shield, Mic, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  Settings,
+  Cpu,
+  Terminal,
+  Shield,
+  Mic,
+  CheckCircle2,
+  AlertCircle,
+  RefreshCw,
+  AppWindow,
+  ExternalLink,
+  Info
+} from 'lucide-react';
 import { APP_CONFIG } from '../lib/constants';
 import { aiService } from '../services/ai';
+import { macControlService } from '../services/mac';
+import { MacAppInfo, MacBridgeHealth, MacAccessibilityStatus } from '../types';
 
 interface SettingsPageProps {
   onRefreshStatus?: () => Promise<unknown>;
@@ -22,9 +36,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
   const [customModelInput, setCustomModelInput] = useState<string>('');
   const [isCustomModel, setIsCustomModel] = useState<boolean>(false);
 
-  // Connection testing state
-  const [isTesting, setIsTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{
+  // Connection testing state for Ollama
+  const [isTestingOllama, setIsTestingOllama] = useState(false);
+  const [ollamaTestResult, setOllamaTestResult] = useState<{
     status: 'idle' | 'success' | 'error';
     message?: string;
     latencyMs?: number;
@@ -33,6 +47,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
 
   // Installed models discovered on local machine
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+
+  // Mac Control Bridge state
+  const [bridgeEndpoint, setBridgeEndpoint] = useState<string>(() =>
+    macControlService.getEndpoint ? macControlService.getEndpoint() : 'http://127.0.0.1:11435'
+  );
+  const [isRefreshingMac, setIsRefreshingMac] = useState(false);
+  const [macHealth, setMacHealth] = useState<MacBridgeHealth | null>(null);
+  const [macAccessibility, setMacAccessibility] = useState<MacAccessibilityStatus | null>(null);
+  const [runningApps, setRunningApps] = useState<MacAppInfo[]>([]);
+  const [frontmostApp, setFrontmostApp] = useState<MacAppInfo | null>(null);
 
   const defaultSuggestedModels = [
     'llama3.2:latest',
@@ -45,7 +69,54 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
     'phi4:latest',
   ];
 
-  // Sync endpoint changes
+  // Refresh Mac Control Status
+  const refreshMacStatus = useCallback(async () => {
+    setIsRefreshingMac(true);
+    try {
+      const health = await macControlService.checkBridgeHealth();
+      setMacHealth(health);
+
+      if (health.status === 'ok') {
+        const [access, apps, front] = await Promise.all([
+          macControlService.checkAccessibility(),
+          macControlService.getRunningApps(),
+          macControlService.getFrontmostApp(),
+        ]);
+        setMacAccessibility(access);
+        setRunningApps(apps);
+        setFrontmostApp(front);
+      } else {
+        setMacAccessibility(null);
+        setRunningApps([]);
+        setFrontmostApp(null);
+      }
+
+      if (onRefreshStatus) {
+        await onRefreshStatus();
+      }
+    } catch {
+      setMacHealth({
+        status: 'unavailable',
+        error: 'Mac Control Bridge unavailable (Run "swift run" in mac-bridge/)',
+      });
+      setMacAccessibility(null);
+      setRunningApps([]);
+      setFrontmostApp(null);
+    } finally {
+      setIsRefreshingMac(false);
+    }
+  }, [onRefreshStatus]);
+
+  // Initial load
+  useEffect(() => {
+    aiService.getAvailableModels().then((models) => {
+      if (models.length > 0) {
+        setAvailableModels(models);
+      }
+    });
+    refreshMacStatus();
+  }, [refreshMacStatus]);
+
   const handleEndpointChange = (val: string) => {
     setOllamaEndpoint(val);
     if (aiService.setEndpoint) {
@@ -53,7 +124,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
     }
   };
 
-  // Sync model changes
+  const handleBridgeEndpointChange = (val: string) => {
+    setBridgeEndpoint(val);
+    if (macControlService.setEndpoint) {
+      macControlService.setEndpoint(val);
+    }
+  };
+
   const handleModelSelect = (val: string) => {
     if (val === '__custom__') {
       setIsCustomModel(true);
@@ -75,12 +152,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
     }
   };
 
-  // Action: Test Ollama Connection
-  const handleTestConnection = async () => {
-    setIsTesting(true);
-    setTestResult({ status: 'idle' });
+  const handleTestOllamaConnection = async () => {
+    setIsTestingOllama(true);
+    setOllamaTestResult({ status: 'idle' });
 
-    // Ensure endpoint in service is updated before test
     if (aiService.setEndpoint) {
       aiService.setEndpoint(ollamaEndpoint);
     }
@@ -89,32 +164,30 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
       const health = await aiService.checkHealth();
 
       if (health.isAvailable) {
-        setTestResult({
+        setOllamaTestResult({
           status: 'success',
           version: health.version,
           latencyMs: health.latencyMs,
           message: `Ollama is running (${health.version || 'active'}) at ${ollamaEndpoint}.`,
         });
 
-        // Query available models from the local instance
         const models = await aiService.getAvailableModels();
         if (models.length > 0) {
           setAvailableModels(models);
         }
       } else {
-        setTestResult({
+        setOllamaTestResult({
           status: 'error',
           message: health.error || `Cannot reach Ollama at ${ollamaEndpoint}.`,
         });
       }
 
-      // Notify global status hook to re-evaluate
       if (onRefreshStatus) {
         await onRefreshStatus();
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Connection failed';
-      setTestResult({
+      setOllamaTestResult({
         status: 'error',
         message: msg,
       });
@@ -122,18 +195,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
         await onRefreshStatus();
       }
     } finally {
-      setIsTesting(false);
+      setIsTestingOllama(false);
     }
   };
-
-  // Load existing models if connected on load
-  useEffect(() => {
-    aiService.getAvailableModels().then((models) => {
-      if (models.length > 0) {
-        setAvailableModels(models);
-      }
-    });
-  }, []);
 
   const allModelOptions = Array.from(new Set([...availableModels, ...defaultSuggestedModels]));
 
@@ -178,7 +242,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
             }`}
           >
             <Terminal className="w-4 h-4" />
-            <span>macOS Permissions</span>
+            <span>Mac Control & Bridge</span>
           </button>
 
           <button
@@ -210,6 +274,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
 
         {/* Settings Tab Content */}
         <div className="flex-1 overflow-y-auto p-8 max-w-3xl">
+          {/* TAB 1: LOCAL OLLAMA MODELS */}
           {activeTab === 'models' && (
             <div className="space-y-6">
               <div>
@@ -219,7 +284,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
                 </p>
               </div>
 
-              {/* Server Endpoint Box */}
               <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-4">
                 <div>
                   <label className="block text-xs font-medium text-neutral-300 mb-1.5">
@@ -235,12 +299,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
                     />
                     <button
                       type="button"
-                      onClick={handleTestConnection}
-                      disabled={isTesting}
+                      onClick={handleTestOllamaConnection}
+                      disabled={isTestingOllama}
                       className="px-3.5 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-medium transition-colors flex items-center gap-1.5 shrink-0 disabled:opacity-50"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin' : ''}`} />
-                      <span>{isTesting ? 'Testing...' : 'Test Ollama Connection'}</span>
+                      <RefreshCw className={`w-3.5 h-3.5 ${isTestingOllama ? 'animate-spin' : ''}`} />
+                      <span>{isTestingOllama ? 'Testing...' : 'Test Ollama Connection'}</span>
                     </button>
                   </div>
                   <span className="text-[11px] text-neutral-500 mt-1.5 block">
@@ -248,36 +312,34 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
                   </span>
                 </div>
 
-                {/* Connection Test Feedback Result */}
-                {testResult.status !== 'idle' && (
+                {ollamaTestResult.status !== 'idle' && (
                   <div
                     className={`p-3 rounded-lg border text-xs leading-relaxed ${
-                      testResult.status === 'success'
+                      ollamaTestResult.status === 'success'
                         ? 'bg-emerald-950/20 border-emerald-900/40 text-emerald-300'
                         : 'bg-rose-950/20 border-rose-900/40 text-rose-300'
                     }`}
                   >
                     <div className="flex items-start gap-2">
-                      {testResult.status === 'success' ? (
+                      {ollamaTestResult.status === 'success' ? (
                         <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                       ) : (
                         <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
                       )}
                       <div className="space-y-1">
                         <div className="font-medium">
-                          {testResult.status === 'success'
-                            ? `Connected to Ollama (latency: ${testResult.latencyMs || 0}ms)`
+                          {ollamaTestResult.status === 'success'
+                            ? `Connected to Ollama (latency: ${ollamaTestResult.latencyMs || 0}ms)`
                             : 'Ollama Connection Failed'}
                         </div>
                         <p className="text-[11px] opacity-90 whitespace-pre-line font-mono">
-                          {testResult.message}
+                          {ollamaTestResult.message}
                         </p>
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* Model Configuration */}
                 <div className="pt-3 border-t border-neutral-800/80 space-y-3">
                   <div>
                     <label className="block text-xs font-medium text-neutral-300 mb-1.5">
@@ -297,7 +359,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
                     </select>
                   </div>
 
-                  {/* Custom model input if chosen */}
                   {isCustomModel && (
                     <div className="flex gap-2">
                       <input
@@ -324,7 +385,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
                 </div>
               </div>
 
-              {/* Mac Terminal Command Instructions */}
               <div className="p-4 rounded-xl bg-neutral-900/40 border border-neutral-800/80 space-y-3">
                 <div className="flex items-center gap-2 text-xs font-medium text-neutral-300">
                   <Terminal className="w-4 h-4 text-neutral-400" />
@@ -347,55 +407,201 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
             </div>
           )}
 
+          {/* TAB 2: MAC CONTROL & NATIVE BRIDGE DIAGNOSTICS */}
           {activeTab === 'mac' && (
             <div className="space-y-6">
               <div>
-                <h3 className="text-base font-semibold text-neutral-100 mb-1">macOS System Entitlements</h3>
+                <h3 className="text-base font-semibold text-neutral-100 mb-1">Mac Control & Native Bridge</h3>
                 <p className="text-xs text-neutral-400">
-                  Capabilities required by SOHAIL OS AI to interact with your Mac via the upcoming native daemon bridge.
+                  Real-time status of the local Swift bridge that connects SOHAIL OS AI to native macOS APIs.
                 </p>
               </div>
 
-              <div className="space-y-3">
-                {[
-                  {
-                    title: 'Accessibility API',
-                    desc: 'Required for UI automation, clicking buttons, and reading window hierarchy',
-                    status: 'Pending Bridge Setup',
-                  },
-                  {
-                    title: 'Full Disk Access',
-                    desc: 'Required for indexing local project directories and reorganizing ~/Downloads',
-                    status: 'Pending Bridge Setup',
-                  },
-                  {
-                    title: 'Apple Events & Automation',
-                    desc: 'Required for scripting Safari, Finder, Calendar, Notes, and Mail',
-                    status: 'Pending Bridge Setup',
-                  },
-                  {
-                    title: 'Terminal / Shell Execution',
-                    desc: 'Required for developer commands and git automation',
-                    status: 'Pending Bridge Setup',
-                  },
-                ].map((item, idx) => (
-                  <div
-                    key={idx}
-                    className="p-4 rounded-xl bg-neutral-900/50 border border-neutral-800 flex items-center justify-between"
-                  >
-                    <div>
-                      <h4 className="text-xs font-medium text-neutral-200 mb-0.5">{item.title}</h4>
-                      <p className="text-[11px] text-neutral-400">{item.desc}</p>
-                    </div>
-                    <span className="text-[11px] text-neutral-400 font-mono">
-                      {item.status}
-                    </span>
+              {/* Bridge Connection & Diagnostics Card */}
+              <div className="p-4 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b border-neutral-800/80">
+                  <div>
+                    <h4 className="text-xs font-semibold text-neutral-200">Mac Control Bridge</h4>
+                    <span className="text-[11px] font-mono text-neutral-400">{bridgeEndpoint}</span>
                   </div>
-                ))}
+                  <button
+                    type="button"
+                    onClick={refreshMacStatus}
+                    disabled={isRefreshingMac}
+                    className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-medium transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingMac ? 'animate-spin' : ''}`} />
+                    <span>{isRefreshingMac ? 'Checking...' : 'Refresh Mac Status'}</span>
+                  </button>
+                </div>
+
+                {/* Primary Diagnostics Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  {/* Status */}
+                  <div className="p-3 rounded-lg bg-neutral-950/60 border border-neutral-800/60">
+                    <span className="text-[11px] text-neutral-400 block mb-1">Bridge Status</span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          macHealth?.status === 'ok'
+                            ? macAccessibility?.granted
+                              ? 'bg-emerald-500'
+                              : 'bg-amber-500'
+                            : 'bg-neutral-500'
+                        }`}
+                      />
+                      <span className="font-semibold text-neutral-100">
+                        {isRefreshingMac
+                          ? 'Checking'
+                          : macHealth?.status === 'ok'
+                          ? macAccessibility?.granted
+                            ? 'Connected'
+                            : 'Permission Required'
+                          : 'Disconnected'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Accessibility Permission */}
+                  <div className="p-3 rounded-lg bg-neutral-950/60 border border-neutral-800/60">
+                    <span className="text-[11px] text-neutral-400 block mb-1">Accessibility Permission</span>
+                    <div className="flex items-center gap-2">
+                      {macAccessibility?.granted ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                      )}
+                      <span
+                        className={`font-semibold ${
+                          macAccessibility?.granted ? 'text-emerald-300' : 'text-amber-300'
+                        }`}
+                      >
+                        {macHealth?.status === 'ok'
+                          ? macAccessibility?.granted
+                            ? 'Granted'
+                            : 'Accessibility permission required'
+                          : 'Bridge Not Connected'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Frontmost Application */}
+                  <div className="p-3 rounded-lg bg-neutral-950/60 border border-neutral-800/60">
+                    <span className="text-[11px] text-neutral-400 block mb-1">Frontmost Application</span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <AppWindow className="w-4 h-4 text-neutral-400 shrink-0" />
+                      <span className="font-mono text-neutral-200 truncate">
+                        {frontmostApp
+                          ? `${frontmostApp.name} (${frontmostApp.bundleId || `PID ${frontmostApp.processId}`})`
+                          : 'Unavailable'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Running Application Count */}
+                  <div className="p-3 rounded-lg bg-neutral-950/60 border border-neutral-800/60">
+                    <span className="text-[11px] text-neutral-400 block mb-1">Running Application Count</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-neutral-100 text-sm font-semibold tabular-nums">
+                        {macHealth?.status === 'ok' ? `${runningApps.length} active apps` : 'Unavailable'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* If Bridge Unavailable: Clear Instruction Banner */}
+                {macHealth?.status !== 'ok' && !isRefreshingMac && (
+                  <div className="p-4 rounded-xl bg-neutral-950/80 border border-neutral-800 space-y-2">
+                    <div className="flex items-center gap-2 text-neutral-300 text-xs font-semibold">
+                      <Info className="w-4 h-4 text-neutral-400" />
+                      <span>Mac Control Bridge unavailable</span>
+                    </div>
+                    <p className="text-xs text-neutral-400 leading-relaxed">
+                      The browser application continues working normally. To activate native macOS inspection, build and launch the local Swift bridge:
+                    </p>
+                    <pre className="bg-neutral-900 p-2.5 rounded-lg border border-neutral-800 font-mono text-[11px] text-neutral-300 select-all">
+                      cd mac-bridge && swift run
+                    </pre>
+                  </div>
+                )}
+
+                {/* Accessibility Missing Instructions */}
+                {macHealth?.status === 'ok' && !macAccessibility?.granted && (
+                  <div className="p-4 rounded-xl bg-amber-950/20 border border-amber-900/40 text-xs text-amber-200 space-y-2">
+                    <div className="flex items-center gap-2 font-semibold text-amber-300">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>Accessibility permission required</span>
+                    </div>
+                    <p className="text-neutral-300 leading-relaxed text-[11px]">
+                      macOS requires affirmative user consent for applications inspecting window and process state.
+                      Please enable it manually in:
+                    </p>
+                    <div className="p-2.5 rounded-lg bg-neutral-950 border border-neutral-800 font-mono text-[11px] text-neutral-200">
+                      System Settings → Privacy & Security → Accessibility
+                    </div>
+                    <p className="text-neutral-400 text-[11px]">
+                      Toggle ON your Terminal application (or the compiled <code className="font-mono text-neutral-300">sohail-mac-bridge</code> executable). Then click <strong>Refresh Mac Status</strong> above.
+                    </p>
+                  </div>
+                )}
+
+                {/* Running Applications Explorer (when connected) */}
+                {macHealth?.status === 'ok' && runningApps.length > 0 && (
+                  <div className="pt-3 border-t border-neutral-800/80 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-neutral-300">Running GUI Applications (NSWorkspace)</span>
+                      <span className="font-mono text-[11px] text-neutral-500 tabular-nums">
+                        {runningApps.length} processes
+                      </span>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+                      {runningApps.map((app) => (
+                        <div
+                          key={`${app.bundleId}-${app.processId}`}
+                          className="flex items-center justify-between p-2 rounded-lg bg-neutral-950/40 border border-neutral-800/40 text-xs"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-medium text-neutral-200 truncate">{app.name}</span>
+                            {app.isActive && (
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950 border border-emerald-800 text-emerald-400">
+                                Active
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-[11px] font-mono text-neutral-500 shrink-0">
+                            {app.processId && <span>PID: {app.processId}</span>}
+                            <span>{app.bundleId}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Endpoint Configuration & Security Note */}
+              <div className="p-4 rounded-xl bg-neutral-900/40 border border-neutral-800/80 space-y-3">
+                <h4 className="text-xs font-semibold text-neutral-300">Bridge Configuration & Security Sandbox</h4>
+                <div className="space-y-2">
+                  <label className="block text-[11px] text-neutral-400">
+                    Localhost Bridge URL
+                  </label>
+                  <input
+                    type="text"
+                    value={bridgeEndpoint}
+                    onChange={(e) => handleBridgeEndpointChange(e.target.value)}
+                    placeholder="http://127.0.0.1:11435"
+                    className="w-full px-3 py-2 rounded-lg bg-neutral-950 border border-neutral-800 text-xs font-mono text-neutral-200 focus:outline-none focus:border-neutral-700"
+                  />
+                  <p className="text-[11px] text-neutral-500">
+                    The bridge listens strictly on <code className="font-mono text-neutral-400">127.0.0.1</code>. It is never exposed to the local network or the internet.
+                  </p>
+                </div>
               </div>
             </div>
           )}
 
+          {/* TAB 3: VOICE & AUDIO */}
           {activeTab === 'voice' && (
             <div className="space-y-6">
               <div>
@@ -433,6 +639,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ onRefreshStatus }) =
             </div>
           )}
 
+          {/* TAB 4: GENERAL & PRIVACY */}
           {activeTab === 'general' && (
             <div className="space-y-6">
               <div>

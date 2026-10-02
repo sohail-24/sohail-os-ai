@@ -1,6 +1,6 @@
 export type NavigationTab = 'chat' | 'tasks' | 'skills' | 'memory' | 'settings';
 
-export type ServiceHealth = 'ready' | 'idle' | 'offline' | 'unconfigured' | 'error' | 'checking';
+export type ServiceHealth = 'ready' | 'idle' | 'offline' | 'unconfigured' | 'error' | 'checking' | 'permission_required';
 
 export interface SystemStatusState {
   aiEngine: {

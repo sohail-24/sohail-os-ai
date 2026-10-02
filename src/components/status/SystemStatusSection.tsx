@@ -15,7 +15,24 @@ export const SystemStatusSection: React.FC<SystemStatusSectionProps> = ({ status
     health: ServiceHealth,
     connected?: boolean
   ): { text: string; dotClass: string } => {
-    // Strict compliance for Ollama connection state
+    // Mac Control exact states: Checking, Connected, Permission Required, Disconnected, Error
+    if (key === 'macControl') {
+      if (health === 'checking') {
+        return { text: 'Checking', dotClass: 'bg-amber-400 animate-pulse' };
+      }
+      if (health === 'ready') {
+        return { text: 'Connected', dotClass: 'bg-emerald-500' };
+      }
+      if (health === 'permission_required') {
+        return { text: 'Permission Required', dotClass: 'bg-amber-500' };
+      }
+      if (health === 'error') {
+        return { text: 'Error', dotClass: 'bg-rose-500' };
+      }
+      return { text: 'Disconnected', dotClass: 'bg-neutral-500' };
+    }
+
+    // Ollama exact states: Checking, Connected, Disconnected
     if (key === 'ollama') {
       if (health === 'checking') {
         return { text: 'Checking', dotClass: 'bg-amber-400 animate-pulse' };
@@ -45,6 +62,8 @@ export const SystemStatusSection: React.FC<SystemStatusSectionProps> = ({ status
         return { text: 'Offline', dotClass: 'bg-neutral-500' };
       case 'unconfigured':
         return { text: 'Unconfigured', dotClass: 'bg-neutral-600' };
+      case 'permission_required':
+        return { text: 'Permission Required', dotClass: 'bg-amber-500' };
       case 'error':
         return { text: 'Error', dotClass: 'bg-rose-500' };
       case 'checking':
@@ -80,9 +99,9 @@ export const SystemStatusSection: React.FC<SystemStatusSectionProps> = ({ status
       label: 'Mac Control',
       icon: Terminal,
       health: status.macControl.status,
-      connected: status.macControl.accessibilityGranted,
-      primaryValue: status.macControl.bridgeVersion,
-      secondaryValue: status.macControl.accessibilityGranted ? 'Authorized' : 'Bridge Inactive',
+      connected: status.macControl.status === 'ready',
+      primaryValue: '127.0.0.1:11435',
+      secondaryValue: status.macControl.accessibilityGranted ? 'Accessibility Authorized' : 'Bridge Dormant / No AX',
       detail: status.macControl.detail,
     },
     {

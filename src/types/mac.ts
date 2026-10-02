@@ -21,8 +21,29 @@ export interface MacSystemInfo {
 export interface MacAppInfo {
   bundleId: string;
   name: string;
+  processId?: number;
   isRunning: boolean;
   isActive: boolean;
+  isHidden?: boolean;
+}
+
+export interface MacBridgeHealth {
+  status: 'ok' | 'unavailable' | 'error';
+  bridge?: string;
+  version?: string;
+  isMacOS?: boolean;
+  osVersion?: string;
+  architecture?: string;
+  accessibilityGranted?: boolean;
+  runningAppsCount?: number;
+  frontmostApp?: MacAppInfo | null;
+  error?: string;
+}
+
+export interface MacAccessibilityStatus {
+  granted: boolean;
+  message: string;
+  instruction?: string;
 }
 
 export interface MacActionResult {
