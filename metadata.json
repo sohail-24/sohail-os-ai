@@ -1,0 +1,6 @@
+{
+  "name": "SOHAIL OS AI",
+  "description": "Local-first personal AI assistant operating system for macOS with native application automation and natural interaction.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
